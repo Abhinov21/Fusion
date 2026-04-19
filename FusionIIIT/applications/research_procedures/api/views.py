@@ -3,6 +3,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.decorators import action
+import datetime
+import json
 
 from applications.research_procedures.models import (
     Patent,
@@ -10,6 +12,8 @@ from applications.research_procedures.models import (
     ResearchProject,
     ConsultancyProject,
     TechTransfer,
+    ResearchProjectStatus,
+    ConsultancyProjectStatus,
 )
 from applications.research_procedures.api.serializers import (
     PatentSerializer,
@@ -405,11 +409,45 @@ def add_project(request):
 def register_commence_project(request):
     """
     Register project commencement.
+    Updates project status to Ongoing and saves start date and initial funding.
     """
     try:
+        pid = request.data.get('pid')
+        start_date = request.data.get('start_date')
+        initial_amount = request.data.get('initial_amount')
+        
+        if not pid:
+            return Response(
+                {'error': 'Project ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            project = ResearchProject.objects.get(id=pid, user=request.user)
+        except ResearchProject.DoesNotExist:
+            return Response(
+                {'error': 'Project not found or you are not authorized to update it'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Update project status and dates
+        project.status = ResearchProjectStatus.ONGOING
+        if start_date:
+            try:
+                project.start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        
+        if initial_amount:
+            project.financial_outlay = str(initial_amount)
+        
+        project.save()
+        
+        serializer = ResearchProjectSerializer(project)
         return Response({
             'success': True,
-            'message': 'Project commencement registered'
+            'message': 'Project commencement registered',
+            'project': serializer.data
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -420,11 +458,44 @@ def register_commence_project(request):
 def project_closure(request):
     """
     Submit project closure form.
+    Updates project status to Completed and stores end report.
     """
     try:
+        pid = request.data.get('pid')
+        end_report = request.FILES.get('end_report')
+        
+        if not pid:
+            return Response(
+                {'error': 'Project ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            project = ResearchProject.objects.get(id=pid, user=request.user)
+        except ResearchProject.DoesNotExist:
+            return Response(
+                {'error': 'Project not found or you are not authorized to close it'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Update project status to completed
+        project.status = ResearchProjectStatus.COMPLETED
+        
+        # Store end report if provided
+        if end_report:
+            from django.core.files.storage import FileSystemStorage
+            file_system = FileSystemStorage()
+            file_name = file_system.save(f'end_report_{pid}_{end_report.name}', end_report)
+            # Store file path in a field or as a related record
+            project.remarks = file_system.url(file_name)
+        
+        project.save()
+        
+        serializer = ResearchProjectSerializer(project)
         return Response({
             'success': True,
-            'message': 'Project closure submitted'
+            'message': 'Project closure submitted',
+            'project': serializer.data
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -435,11 +506,42 @@ def project_closure(request):
 def add_ad_committee(request):
     """
     Add advertisement and committee approval form.
+    Stores committee composition and approval details for staff recruitment.
     """
     try:
+        # Extract request data
+        pid = request.data.get('pid')
+        committee_members = request.data.get('committee_members', [])
+        approved_positions = request.data.get('approved_positions', 0)
+        
+        if not pid:
+            return Response(
+                {'error': 'Project ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            project = ResearchProject.objects.get(id=pid)
+        except ResearchProject.DoesNotExist:
+            return Response(
+                {'error': 'Project not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Store committee and approval information in remarks or future dedicated fields
+        committee_info = {
+            'committee_members': committee_members,
+            'approved_positions': approved_positions,
+            'approved_by': request.user.get_full_name() or request.user.username
+        }
+        
+        project.remarks = json.dumps(committee_info)
+        project.save()
+        
         return Response({
             'success': True,
-            'message': 'Advertisement and committee form submitted'
+            'message': 'Advertisement and committee form submitted',
+            'pid': pid
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -450,11 +552,47 @@ def add_ad_committee(request):
 def staff_document_upload(request):
     """
     Upload staff documents.
+    Stores recruitment-related documents in project records.
     """
     try:
+        pid = request.data.get('pid')
+        document = request.FILES.get('document')
+        document_type = request.data.get('document_type', 'general')
+        
+        if not pid:
+            return Response(
+                {'error': 'Project ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not document:
+            return Response(
+                {'error': 'Document file is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            project = ResearchProject.objects.get(id=pid)
+        except ResearchProject.DoesNotExist:
+            return Response(
+                {'error': 'Project not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Store document
+        from django.core.files.storage import FileSystemStorage
+        file_system = FileSystemStorage()
+        file_name = file_system.save(
+            f'staff_doc_{pid}_{document_type}_{document.name}',
+            document
+        )
+        file_url = file_system.url(file_name)
+        
         return Response({
             'success': True,
-            'message': 'Documents uploaded successfully'
+            'message': 'Documents uploaded successfully',
+            'file_url': file_url,
+            'document_type': document_type
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -465,11 +603,52 @@ def staff_document_upload(request):
 def staff_selection_report(request):
     """
     Submit staff selection report.
+    Stores selection results and recommendations for staff recruitment.
     """
     try:
+        pid = request.data.get('pid')
+        selected_candidates = request.data.get('selected_candidates', [])
+        report_document = request.FILES.get('report_document')
+        
+        if not pid:
+            return Response(
+                {'error': 'Project ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            project = ResearchProject.objects.get(id=pid)
+        except ResearchProject.DoesNotExist:
+            return Response(
+                {'error': 'Project not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Store selection report information
+        selection_info = {
+            'selected_candidates': selected_candidates,
+            'report_submitted_by': request.user.get_full_name() or request.user.username,
+            'submission_timestamp': str(datetime.datetime.now())
+        }
+        
+        # Store report document if provided
+        if report_document:
+            from django.core.files.storage import FileSystemStorage
+            file_system = FileSystemStorage()
+            file_name = file_system.save(
+                f'selection_report_{pid}_{report_document.name}',
+                report_document
+            )
+            selection_info['report_url'] = file_system.url(file_name)
+        
+        project.remarks = json.dumps(selection_info)
+        project.save()
+        
         return Response({
             'success': True,
-            'message': 'Selection report submitted'
+            'message': 'Selection report submitted',
+            'pid': pid,
+            'candidate_count': len(selected_candidates)
         }, status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -480,13 +659,47 @@ def staff_selection_report(request):
 def committee_action(request):
     """
     Committee action endpoint.
+    GET: Retrieve pending committee actions
+    POST: Submit committee decision/action
     """
     try:
         if request.method == 'POST':
+            pid = request.data.get('pid')
+            action = request.data.get('action')
+            remarks = request.data.get('remarks', '')
+            
+            if not pid or not action:
+                return Response(
+                    {'error': 'Project ID and action are required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            try:
+                project = ResearchProject.objects.get(id=pid)
+            except ResearchProject.DoesNotExist:
+                return Response(
+                    {'error': 'Project not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Store committee action
+            action_info = {
+                'action': action,
+                'remarks': remarks,
+                'acted_by': request.user.get_full_name() or request.user.username,
+                'action_timestamp': str(datetime.datetime.now())
+            }
+            project.remarks = json.dumps(action_info)
+            project.save()
+            
             return Response({
                 'success': True,
-                'message': 'Committee action processed'
+                'message': 'Committee action processed',
+                'pid': pid,
+                'action': action
             }, status=status.HTTP_200_OK)
+        
+        # GET: Return empty list for now (can be extended to fetch pending actions)
         return Response([], status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -497,13 +710,49 @@ def committee_action(request):
 def staff_decision(request):
     """
     Staff decision endpoint.
+    GET: Retrieve pending staff decisions
+    POST: Submit staff recruitment decision
     """
     try:
         if request.method == 'POST':
+            pid = request.data.get('pid')
+            decision = request.data.get('decision')  # 'approved', 'rejected', 'pending'
+            candidate_id = request.data.get('candidate_id')
+            remarks = request.data.get('remarks', '')
+            
+            if not pid or not decision:
+                return Response(
+                    {'error': 'Project ID and decision are required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            try:
+                project = ResearchProject.objects.get(id=pid)
+            except ResearchProject.DoesNotExist:
+                return Response(
+                    {'error': 'Project not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Store staff decision
+            decision_info = {
+                'decision': decision,
+                'candidate_id': candidate_id,
+                'remarks': remarks,
+                'decided_by': request.user.get_full_name() or request.user.username,
+                'decision_timestamp': str(datetime.datetime.now())
+            }
+            project.remarks = json.dumps(decision_info)
+            project.save()
+            
             return Response({
                 'success': True,
-                'message': 'Staff decision recorded'
+                'message': 'Staff decision recorded',
+                'pid': pid,
+                'decision': decision
             }, status=status.HTTP_200_OK)
+        
+        # GET: Return empty list for now (can be extended to fetch pending decisions)
         return Response([], status=status.HTTP_200_OK)
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
