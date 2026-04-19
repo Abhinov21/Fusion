@@ -6,8 +6,10 @@ Tests models, services, selectors, serializers, and API endpoints.
 from django.test import TestCase, Client
 from django.contrib.auth.models import User
 from django.urls import reverse
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
+from unittest.mock import patch
 import datetime
 
 from applications.research_procedures.models import (
@@ -164,6 +166,52 @@ class PatentServiceTestCase(TestCase):
         with self.assertRaises(UnauthorizedException):
             PatentService.update_status(1, PatentStatus.APPROVED, non_faculty_user)
 
+    @patch('applications.research_procedures.api.services.research_procedures_notif')
+    def test_create_patent_triggers_notifications(self, mock_notif):
+        """Patent creation should trigger notification workflow."""
+        ipd_file = SimpleUploadedFile(
+            'ipd_form.pdf',
+            b'ipd-content',
+            content_type='application/pdf'
+        )
+        details_file = SimpleUploadedFile(
+            'project_details.pdf',
+            b'details-content',
+            content_type='application/pdf'
+        )
+
+        patent = PatentService.create_patent(
+            user=self.faculty_user,
+            title='Notification Test Patent',
+            ipd_form_file=ipd_file,
+            project_details_file=details_file
+        )
+
+        self.assertIsNotNone(patent.application_id)
+        self.assertGreaterEqual(mock_notif.call_count, 1)
+
+    def test_create_patent_rejects_file_over_10mb(self):
+        """Patent upload should fail when file exceeds the configured size limit."""
+        large_content = b'a' * (10 * 1024 * 1024 + 1)
+        ipd_file = SimpleUploadedFile(
+            'ipd_form.pdf',
+            large_content,
+            content_type='application/pdf'
+        )
+        details_file = SimpleUploadedFile(
+            'project_details.pdf',
+            b'details-content',
+            content_type='application/pdf'
+        )
+
+        with self.assertRaises(ValueError):
+            PatentService.create_patent(
+                user=self.faculty_user,
+                title='Large File Test',
+                ipd_form_file=ipd_file,
+                project_details_file=details_file
+            )
+
 
 class PatentSelectorsTestCase(TestCase):
     """Test cases for PatentSelectors."""
@@ -289,6 +337,50 @@ class PatentAPITestCase(APITestCase):
         self.client.force_authenticate(user=self.faculty_user)
         response = self.client.get(f'/api/patent/{self.patent.application_id}/')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_patent_create_rejects_non_pdf(self):
+        """Patent create endpoint should reject non-PDF files."""
+        self.client.force_authenticate(user=self.faculty_user)
+        response = self.client.post(
+            '/api/patent/',
+            {
+                'title': 'Bad Upload',
+                'ipd_form': SimpleUploadedFile(
+                    'ipd_form.txt',
+                    b'not-a-pdf',
+                    content_type='text/plain'
+                ),
+                'project_details': SimpleUploadedFile(
+                    'project_details.pdf',
+                    b'pdf-content',
+                    content_type='application/pdf'
+                ),
+            },
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patent_create_rejects_file_over_10mb(self):
+        """Patent create endpoint should reject files bigger than 10 MB."""
+        self.client.force_authenticate(user=self.faculty_user)
+        response = self.client.post(
+            '/api/patent/',
+            {
+                'title': 'Large Upload',
+                'ipd_form': SimpleUploadedFile(
+                    'ipd_form.pdf',
+                    b'a' * (10 * 1024 * 1024 + 1),
+                    content_type='application/pdf'
+                ),
+                'project_details': SimpleUploadedFile(
+                    'project_details.pdf',
+                    b'pdf-content',
+                    content_type='application/pdf'
+                ),
+            },
+            format='multipart'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ResearchGroupAPITestCase(APITestCase):

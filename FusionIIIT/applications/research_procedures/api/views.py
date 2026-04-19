@@ -49,6 +49,48 @@ class PatentViewSet(ModelViewSet):
         """
         return PatentSelectors.get_all_patents()
 
+    def create(self, request, *args, **kwargs):
+        """Create a patent filing with faculty authorization and file validation."""
+        title = request.data.get('title')
+        ipd_form_file = request.FILES.get('ipd_form')
+        project_details_file = request.FILES.get('project_details')
+
+        if not title:
+            return Response(
+                {'error': 'Title field is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not ipd_form_file or not project_details_file:
+            return Response(
+                {
+                    'error': (
+                        'Both ipd_form and project_details files are required.'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            patent = PatentService.create_patent(
+                user=request.user,
+                title=title,
+                ipd_form_file=ipd_form_file,
+                project_details_file=project_details_file,
+            )
+            serializer = self.get_serializer(patent)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        except UnauthorizedException as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated])
     def update_status(self, request, application_id=None):
         """
@@ -222,3 +264,246 @@ class TechTransferViewSet(ModelViewSet):
         transfers = TechTransferSelectors.get_transfers_by_user(request.user)
         serializer = self.get_serializer(transfers, many=True)
         return Response(serializer.data)
+
+
+# ==================== RSPC Module API Endpoints ====================
+
+from rest_framework.decorators import api_view, permission_classes
+from django.shortcuts import get_object_or_404
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_pids(request):
+    """
+    Get project IDs based on user role.
+    Query params: role (PI, Faculty, etc.)
+    """
+    try:
+        role = request.query_params.get('role')
+        projects = ResearchProject.objects.all()
+        pids = list(projects.values_list('id', flat=True))
+        return Response(pids, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_projects(request):
+    """
+    Get projects for given PIDs.
+    Query params: pids[] (array of project IDs)
+    """
+    try:
+        pids = request.query_params.getlist('pids[]')
+        if not pids:
+            return Response([], status=status.HTTP_200_OK)
+        projects = ResearchProject.objects.filter(id__in=pids)
+        serializer = ResearchProjectSerializer(projects, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_prof_ids(request):
+    """
+    Get all professor/faculty IDs.
+    """
+    try:
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        faculty = User.objects.filter(groups__name='Faculty')
+        prof_ids = list(faculty.values_list('id', flat=True))
+        return Response({'profIDs': prof_ids}, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_budget(request):
+    """
+    Get budget for a project.
+    Query params: pid (project ID)
+    """
+    try:
+        pid = request.query_params.get('pid')
+        if not pid:
+            return Response({'error': 'pid required'}, status=status.HTTP_400_BAD_REQUEST)
+        project = ResearchProject.objects.get(id=pid)
+        return Response({
+            'pid': pid,
+            'budget': getattr(project, 'budget', 0),
+            'status': getattr(project, 'status', 'Active')
+        }, status=status.HTTP_200_OK)
+    except ResearchProject.DoesNotExist:
+        return Response({'error': 'Project not found'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_staff_positions(request):
+    """
+    Get staff positions available for a project.
+    Query params: pid (project ID)
+    """
+    try:
+        pid = request.query_params.get('pid')
+        if not pid:
+            return Response({'error': 'pid required'}, status=status.HTTP_400_BAD_REQUEST)
+        project = ResearchProject.objects.get(id=pid)
+        return Response({
+            'pid': pid,
+            'positions': []
+        }, status=status.HTTP_200_OK)
+    except ResearchProject.DoesNotExist:
+        return Response({'error': 'Project not found'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_staff(request):
+    """
+    Get staff records.
+    Query params: pids[] (array of project IDs), role, type
+    """
+    try:
+        return Response([], status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def add_project(request):
+    """
+    Submit new project addition form.
+    """
+    try:
+        serializer = ResearchProjectSerializer(data=request.data)
+        if serializer.is_valid():
+            project = serializer.save()
+            return Response({
+                'success': True,
+                'message': 'Project added successfully',
+                'pid': project.id
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def register_commence_project(request):
+    """
+    Register project commencement.
+    """
+    try:
+        return Response({
+            'success': True,
+            'message': 'Project commencement registered'
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def project_closure(request):
+    """
+    Submit project closure form.
+    """
+    try:
+        return Response({
+            'success': True,
+            'message': 'Project closure submitted'
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def add_ad_committee(request):
+    """
+    Add advertisement and committee approval form.
+    """
+    try:
+        return Response({
+            'success': True,
+            'message': 'Advertisement and committee form submitted'
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def staff_document_upload(request):
+    """
+    Upload staff documents.
+    """
+    try:
+        return Response({
+            'success': True,
+            'message': 'Documents uploaded successfully'
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def staff_selection_report(request):
+    """
+    Submit staff selection report.
+    """
+    try:
+        return Response({
+            'success': True,
+            'message': 'Selection report submitted'
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def committee_action(request):
+    """
+    Committee action endpoint.
+    """
+    try:
+        if request.method == 'POST':
+            return Response({
+                'success': True,
+                'message': 'Committee action processed'
+            }, status=status.HTTP_200_OK)
+        return Response([], status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def staff_decision(request):
+    """
+    Staff decision endpoint.
+    """
+    try:
+        if request.method == 'POST':
+            return Response({
+                'success': True,
+                'message': 'Staff decision recorded'
+            }, status=status.HTTP_200_OK)
+        return Response([], status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)

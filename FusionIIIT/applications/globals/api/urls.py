@@ -6,6 +6,7 @@ urlpatterns = [
 
     url(r'^auth/login/', views.login, name='login-api'),
     url(r'^auth/logout/', views.logout, name='logout-api'),
+    url(r'^auth/me/', views.auth_me, name='auth-me-api'),
     # generic profile endpoint
     url(r'^profile/(?P<username>.+)/', views.profile, name='profile-api'),
     # current user profile

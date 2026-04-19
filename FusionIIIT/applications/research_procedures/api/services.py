@@ -40,6 +40,21 @@ class PatentService:
     """
 
     VALID_STATUSES = [choice[0] for choice in PatentStatus.choices]
+    MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024
+
+    @staticmethod
+    def _validate_pdf_upload(file_obj, field_name):
+        """Validate uploaded file type and size for patent submissions."""
+        if not file_obj:
+            raise ValueError(f"{field_name} is required")
+
+        if not file_obj.name.lower().endswith('.pdf'):
+            raise ValueError(f"{field_name} must be a PDF file")
+
+        if file_obj.size > PatentService.MAX_UPLOAD_SIZE_BYTES:
+            raise ValueError(
+                f"{field_name} exceeds 10 MB size limit"
+            )
 
     @staticmethod
     @transaction.atomic
@@ -69,11 +84,11 @@ class PatentService:
             raise UnauthorizedException("Only faculty members can file patents")
 
         # Validate files
-        if not ipd_form_file.name.endswith('.pdf'):
-            raise ValueError("IPD form must be a PDF file")
-
-        if not project_details_file.name.endswith('.pdf'):
-            raise ValueError("Project details must be a PDF file")
+        PatentService._validate_pdf_upload(ipd_form_file, "IPD form")
+        PatentService._validate_pdf_upload(
+            project_details_file,
+            "Project details"
+        )
 
         # Create patent instance
         patent = Patent(

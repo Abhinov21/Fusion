@@ -1,4 +1,4 @@
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, login as auth_login, logout as auth_logout
 from applications.academic_information.models import Student
 from applications.eis.api.views import profile as eis_profile
 from applications.globals.models import (HoldsDesignation,Designation)
@@ -9,7 +9,7 @@ from applications.placement_cell.models import (Achievement, Course, Education,
 from django.shortcuts import get_object_or_404, redirect
 
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.authentication import TokenAuthentication
+from rest_framework.authentication import TokenAuthentication, SessionAuthentication
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes,authentication_classes
 from rest_framework.permissions import AllowAny
@@ -30,6 +30,10 @@ def login(request):
     serializer.is_valid(raise_exception=True)
     user = get_and_authenticate_user(**serializer.validated_data)
     data = serializers.AuthUserSerializer(user).data
+    
+    # Create Django session
+    auth_login(request, user)
+    
     resp = {
         'success' : 'True',
         'message' : 'User logged in successfully',
@@ -40,14 +44,106 @@ def login(request):
 @api_view(['POST'])
 def logout(request):
     request.user.auth_token.delete()
+    # Destroy Django session
+    auth_logout(request)
     resp = {
         'message' : 'User logged out successfully'
     }
     return Response(data=resp, status=status.HTTP_200_OK)
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
+@authentication_classes([TokenAuthentication, SessionAuthentication])
+def auth_me(request):
+    """
+    Returns current authenticated user's information.
+    This endpoint is called by frontend's ValidateAuth to verify user token and get initial user data.
+    """
+    try:
+        user = request.user
+        
+        # Get user's name
+        name = f"{user.first_name}_{user.last_name}" if user.first_name else user.username
+        
+        # Get user's designation/roles
+        designation_list = list(HoldsDesignation.objects.filter(working=user).values_list('designation'))
+        designation_ids = [dest_id for dest_ids in designation_list for dest_id in dest_ids]
+        designation_info = []
+        for des_id in designation_ids:
+            try:
+                designation = get_object_or_404(Designation, id=des_id)
+                designation_info.append(str(designation.name))
+            except:
+                pass
+        
+        # Get user's roll number from extrainfo if exists
+        roll_no = ""
+        try:
+            if hasattr(user, 'extrainfo') and hasattr(user.extrainfo, 'roll_no'):
+                roll_no = user.extrainfo.roll_no
+        except:
+            pass
+        
+        # Last selected role (default to first designation if exists)
+        last_selected_role = designation_info[0] if designation_info else None
+        
+        # Get accessible modules based on user's designations or superuser status
+        accessible_modules = {}
+        
+        # If superuser/admin, give access to all modules
+        if user.is_superuser or user.is_staff:
+            # List of all available modules in the system
+            all_modules = [
+                'home', 'course_registration', 'program_and_curriculum', 'mess_management',
+                'visitor_hostel', 'phc', 'fts', 'spacs', 'complaint_management',
+                'placement_cell', 'department', 'rspc', 'inventory_management',
+                'purchase_and_store', 'hr', 'examinations', 'gymkhana', 'iwd',
+                'hostel_management', 'other_academics', 'course_management'
+            ]
+            # Create role-based module mapping for admin/superuser
+            accessible_modules = {
+                last_selected_role if last_selected_role else 'admin': {module: True for module in all_modules}
+            }
+        else:
+            # For regular users, determine modules based on designations
+            # Example mapping of designations to modules
+            designation_module_map = {
+                'dean_rspc': {'rspc': True},
+                'sectionhead_rspc': {'rspc': True},
+                'counselling_head': {},
+                'doctor': {'phc': True},
+                'registration_staff': {'phc': True},
+                # Add more mappings as needed
+            }
+            
+            # Build accessible_modules based on user's designations
+            for designation_name in designation_info:
+                if designation_name in designation_module_map:
+                    if designation_name not in accessible_modules:
+                        accessible_modules[designation_name] = {}
+                    accessible_modules[designation_name].update(designation_module_map[designation_name])
+                else:
+                    # If designation not in map, create empty module access for it
+                    if designation_name not in accessible_modules:
+                        accessible_modules[designation_name] = {}
+        
+        resp = {
+            'name': name,
+            'username': user.username,
+            'email': user.email,
+            'designation_info': designation_info,
+            'accessible_modules': accessible_modules,
+            'last_selected_role': last_selected_role,
+            'roll_no': roll_no,
+        }
+        return Response(resp, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
 def dashboard(request):
     user=request.user
 
@@ -240,7 +336,7 @@ def profile_delete(request, id):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-@authentication_classes([TokenAuthentication])
+@authentication_classes([SessionAuthentication, TokenAuthentication])
 def NotificationRead(request):
     try:
         notifId=int(request.data['id'])
